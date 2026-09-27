@@ -67,8 +67,15 @@ POST /action/dayahead-optim
 ```
 
 Here the car gets at least 10 kWh (0.91 h × 11 kW) before time step 38, and at most 40 kWh. Anything above
-those 10 kWh is only charged where a kWh costs less than €0.539. The battery may end below its starting state
-of charge if the energy in it is worth less than €0.18 per kWh.
+those 10 kWh is only charged where a kWh costs less than the value per kWh. In this example that is our own
+setting of €0.539: the reimbursement we receive for each kWh charged at home. Set it to what a kWh in your
+car is worth to you.
+
+`battery_terminal_value` is the price the plan puts on a kWh that is still in the battery when the horizon
+ends. At €0.18 (an example value) the planner discharges, for export or for the car, only where that earns
+more than €0.18 per kWh after losses and wear; otherwise it keeps the energy. A higher value makes it end
+fuller, 0 lets it run down to the minimum. A reasonable choice is what that kWh saves you later: roughly the
+discharge efficiency × a typical import price, minus the wear cost.
 
 ## How it is tested
 
