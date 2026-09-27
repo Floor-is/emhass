@@ -5,7 +5,7 @@ die knoppen gedraagt hij zich als de upstream-release waarop de tak `planwaarde`
 
 | sleutel | eenheid | wat |
 |---|---|---|
-| `battery_final_value` | EUR/kWh (getal of lijst per accu) | geen vaste eindstand; de energie aan het eind van de horizon is `v` per kWh waard. De accu mag tot `battery_minimum_state_of_charge`. |
+| `battery_terminal_value` | EUR/kWh (getal of lijst per accu) | geen vaste eindstand; de energie aan het eind van de horizon is `v` per kWh waard. De accu mag tot `battery_minimum_state_of_charge`. |
 | `deferrable_load_energy_max` | Wh per load | de eis wordt `eis <= E <= max`. De eis (`operating_hours × nominal_power`) is de vloer. |
 | `deferrable_load_value` | EUR/kWh per load | elke kWh in de load levert `v` op. Boven de vloer laadt de load alleen waar een kWh minder kost dan `v`. |
 
