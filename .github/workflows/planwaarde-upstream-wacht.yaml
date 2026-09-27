@@ -1,0 +1,57 @@
+# PLANWAARDE-fork: wacht op een nieuwe upstream-release en faalt hard als de patch daar
+# niet meer op past (rebase-conflict) of niet meer werkt (tests rood).
+# Groen: de herbaseerde tak komt op `planwaarde-op-<tag>`. Er komt GEEN tag en GEEN image;
+# een nieuwe add-on-versie is een bewuste keuze (tag v<upstream>-planwaarde.<n> zetten).
+name: "PLANWAARDE upstream-wacht"
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  wacht:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: planwaarde
+          fetch-depth: 0
+      - name: Upstream-release en huidige basis bepalen
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add upstream https://github.com/davidusb-geek/emhass.git
+          git fetch --quiet upstream --tags
+          nieuw=$(gh api repos/davidusb-geek/emhass/releases/latest --jq .tag_name)
+          basis=$(git describe --tags --abbrev=0 --exclude '*-planwaarde*' HEAD)
+          echo "upstream-release: $nieuw · basis van planwaarde: $basis"
+          test -n "$nieuw" && test -n "$basis"
+          echo "nieuw=$nieuw" >>"$GITHUB_OUTPUT"
+          echo "basis=$basis" >>"$GITHUB_OUTPUT"
+          if [ "$nieuw" = "$basis" ] || git ls-remote --exit-code --heads origin "planwaarde-op-$nieuw" >/dev/null; then
+            echo "niets te doen"; echo "doen=nee" >>"$GITHUB_OUTPUT"
+          else
+            echo "doen=ja" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Herbaseer op de nieuwe release (conflict = rood)
+        if: steps.tag.outputs.doen == 'ja'
+        run: |
+          git config user.name "planwaarde-wacht"
+          git config user.email "planwaarde-wacht@users.noreply.github.com"
+          git checkout -b "planwaarde-op-${{ steps.tag.outputs.nieuw }}"
+          git rebase --onto "${{ steps.tag.outputs.nieuw }}" "${{ steps.tag.outputs.basis }}"
+      - name: Install uv
+        if: steps.tag.outputs.doen == 'ja'
+        uses: astral-sh/setup-uv@v5
+      - name: Tests op de herbaseerde tak (rood = patch werkt niet meer)
+        if: steps.tag.outputs.doen == 'ja'
+        run: |
+          uv sync --extra test
+          uv run pytest -q tests/test_planwaarde.py tests/test_optimization.py tests/test_multi_battery_optimization.py tests/test_runtime_params.py tests/test_schema_contract.py
+      - name: Herbaseerde tak bewaren
+        if: steps.tag.outputs.doen == 'ja'
+        run: git push origin "planwaarde-op-${{ steps.tag.outputs.nieuw }}"
