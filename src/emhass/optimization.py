@@ -313,6 +313,10 @@ class Optimization:
         self.param_soc_final = [
             cp.Parameter(nonneg=True, name=f"soc_final_{k}") for k in range(self.n_batt)
         ]
+        # PLANWAARDE: waarde van de energie die aan het eind in de accu zit (EUR/kWh).
+        self.param_final_value = [
+            cp.Parameter(nonneg=True, name=f"final_value_{k}") for k in range(self.n_batt)
+        ]
 
         # Battery power limits — parameterised so SoC-derated values arriving
         # via runtimeparams update without invalidating the OptimizationCache.
@@ -2752,6 +2756,16 @@ class Optimization:
                 -self.param_soc_final_penalty * sum(soc_final_under)
                 + self.param_soc_final_reward * sum(self.vars["soc_final_over"])
             )
+
+        # PLANWAARDE: eindwaarde. + v * E_eind, met E_eind = E_init - sum(energy_change);
+        # de constante valt weg. Zelfde energy_change als de SOC-keten (r. power_flow).
+        if self.optim_conf["set_use_battery"]:
+            _bc = self._battery_conf_as_lists()
+            for k in range(len(self.vars["p_sto_pos"])):
+                _flow = self.vars["p_sto_pos"][k] * (1 / _bc["eff_dis"][k]) + self.vars[
+                    "p_sto_neg"
+                ][k] * _bc["eff_chg"][k]
+                objective_terms.append(-scale * self.param_final_value[k] * cp.sum(_flow))
 
         # Battery-first priority penalty (issue #834/#1002). battery_first_penalty
         # is the grid import that occurs while the battery is still above its
@@ -6174,6 +6188,17 @@ class Optimization:
                 * SOC_FINAL_DEVIATION_PENALTY_FACTOR
                 * max(float(np.max(np.maximum(np.asarray(unit_load_cost, dtype=float), 0.0))), 1e-3)
             )
+        # PLANWAARDE: met een eindwaarde is er geen vaste eindstand meer.
+        _fv = self.optim_conf.get("battery_final_value")
+        for k in range(self.n_batt):
+            if _fv is None:
+                self.param_final_value[k].value = 0.0
+            else:
+                _fvk = _fv[k] if isinstance(_fv, list) else _fv
+                self.param_final_value[k].value = float(_fvk)
+        if _fv is not None:
+            self.param_soc_final_penalty.value = 0.0
+            self.param_soc_final_reward.value = 0.0
         self.param_prod_price.value = unit_prod_price
 
         # Per-load cost forecast overrides. Default each load's per-timestep cost
