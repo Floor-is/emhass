@@ -276,19 +276,20 @@ class Optimization:
             cp.Parameter(self.num_timesteps, name=f"cost_per_load_{k}")
             for k in range(num_def_loads)
         ]
-        # PLANWAARDE: waarde per kWh in een deferrable load, en de bovengrens van zijn energie.
+        # PLANWAARDE: value per kWh in a deferrable load, and the upper bound on its energy.
         self.param_def_value = [
             cp.Parameter(nonneg=True, name=f"def_value_{k}") for k in range(num_def_loads)
         ]
         self.param_def_energy_upper = [
             cp.Parameter(nonneg=True, name=f"def_energy_upper_{k}") for k in range(num_def_loads)
         ]
-        # PLANWAARDE: tekort op de eis (Wh). Bovengrens 0 zonder knoppen = gedrag 0.18.3;
-        # met knoppen gelijk aan de eis, zodat een onhaalbare eis nooit infeasible maakt.
-        self.param_def_tekort_max = [
-            cp.Parameter(nonneg=True, name=f"def_tekort_max_{k}") for k in range(num_def_loads)
+        # PLANWAARDE: shortfall on the energy requirement (Wh). Upper bound 0 without the new
+        # parameters = upstream behaviour; with them it equals the requirement, so an unreachable
+        # requirement never makes the problem infeasible.
+        self.param_def_shortfall_max = [
+            cp.Parameter(nonneg=True, name=f"def_shortfall_max_{k}") for k in range(num_def_loads)
         ]
-        self.param_def_tekort_boete = cp.Parameter(nonneg=True, name="def_tekort_boete")
+        self.param_def_shortfall_penalty = cp.Parameter(nonneg=True, name="def_shortfall_penalty")
 
         # Per-battery Scalar Parameters (#610). A list of length self.n_batt,
         # one cp.Parameter per battery, indexed k in range(self.n_batt) - this
@@ -302,9 +303,9 @@ class Optimization:
         self.param_soc_final = [
             cp.Parameter(nonneg=True, name=f"soc_final_{k}") for k in range(self.n_batt)
         ]
-        # PLANWAARDE: waarde van de energie die aan het eind in de accu zit (EUR/kWh).
-        self.param_final_value = [
-            cp.Parameter(nonneg=True, name=f"final_value_{k}") for k in range(self.n_batt)
+        # PLANWAARDE: value of the energy left in the battery at the end of the horizon (EUR/kWh).
+        self.param_terminal_value = [
+            cp.Parameter(nonneg=True, name=f"terminal_value_{k}") for k in range(self.n_batt)
         ]
 
         # Battery power limits — parameterised so SoC-derated values arriving
@@ -2308,9 +2309,10 @@ class Optimization:
             p_def_bin2.append(cp.Variable(n, boolean=True, name=f"p_def_bin2_{k}"))
 
         vars_dict["p_deferrable"] = p_deferrable
-        # PLANWAARDE: tekort op de energie-eis per load (Wh), zie param_def_tekort_max.
-        vars_dict["def_tekort"] = [
-            cp.Variable(nonneg=True, name=f"def_tekort_{k}") for k in range(num_deferrable_loads)
+        # PLANWAARDE: shortfall on the energy requirement per load (Wh),
+        # see param_def_shortfall_max.
+        vars_dict["def_shortfall"] = [
+            cp.Variable(nonneg=True, name=f"def_shortfall_{k}") for k in range(num_deferrable_loads)
         ]
         vars_dict["p_def_bin1"] = p_def_bin1
         vars_dict["p_def_start"] = p_def_start
@@ -2734,25 +2736,25 @@ class Optimization:
                 * (sum(soc_final_under) + sum(self.vars["soc_final_over"]))
             )
 
-        # PLANWAARDE: eindwaarde. + v * E_eind, met E_eind = E_init - sum(energy_change);
-        # de constante valt weg. Zelfde energy_change als de SOC-keten (r. power_flow).
+        # PLANWAARDE: terminal value. + v * E_end, with E_end = E_init - sum(energy_change);
+        # the constant drops out. Same energy_change as the SOC recursion.
         if self.optim_conf["set_use_battery"]:
             _bc = self._battery_conf_as_lists()
             for k in range(len(self.vars["p_sto_pos"])):
                 _flow = self.vars["p_sto_pos"][k] * (1 / _bc["eff_dis"][k]) + self.vars[
                     "p_sto_neg"
                 ][k] * _bc["eff_chg"][k]
-                objective_terms.append(-scale * self.param_final_value[k] * cp.sum(_flow))
+                objective_terms.append(-scale * self.param_terminal_value[k] * cp.sum(_flow))
 
-        # PLANWAARDE: waarde per kWh in een deferrable load, bovenop wat hij kost.
+        # PLANWAARDE: value per kWh in a deferrable load, on top of what it costs.
         _p_def = self.vars.get("p_deferrable", None)
         if _p_def is not None:
             for k, _v in enumerate(self.param_def_value):
                 if k < len(_p_def):
                     objective_terms.append(scale * _v * cp.sum(_p_def[k]))
-        # PLANWAARDE: een tekort op de eis kost def_tekort_boete EUR per kWh.
-        for _t in self.vars.get("def_tekort", []):
-            objective_terms.append(-0.001 * self.param_def_tekort_boete * _t)
+        # PLANWAARDE: a shortfall on the requirement costs def_shortfall_penalty EUR per kWh.
+        for _t in self.vars.get("def_shortfall", []):
+            objective_terms.append(-0.001 * self.param_def_shortfall_penalty * _t)
 
         # Battery-first priority penalty (issue #834/#1002). battery_first_penalty
         # is the grid import that occurs while the battery is still above its
@@ -4480,12 +4482,13 @@ class Optimization:
                     self.deferrable_with_max_cost[k] = (max_cost[k], load_is_scheduled)
 
                     self.logger.debug(f"Deferrable load {k}: max cost constraint added")
-                    # PLANWAARDE: deze tak houdt de eis als gelijkheid; energy_max werkt hier niet.
+                    # PLANWAARDE: this branch keeps the requirement as an equality;
+                    # energy_max has no effect here.
                     _emax_mc = self.optim_conf.get("deferrable_load_energy_max") or []
                     if k < len(_emax_mc) and (_emax_mc[k] or 0) > 0:
                         self.logger.warning(
-                            f"Deferrable load {k}: deferrable_load_energy_max wordt genegeerd "
-                            "omdat deferrable_load_max_cost gezet is"
+                            f"Deferrable load {k}: deferrable_load_energy_max is ignored "
+                            "because deferrable_load_max_cost is set"
                         )
 
                 # Big-M value: maximum possible energy consumption
@@ -4515,16 +4518,17 @@ class Optimization:
                     )
                 else:
                     # No-max-cost energy constraint
-                    # PLANWAARDE: + tekort (0 zonder knoppen, zie param_def_tekort_max).
-                    _tekort = self.vars["def_tekort"][k]
-                    constraints.append(_tekort <= self.param_def_tekort_max[k])
+                    # PLANWAARDE: + shortfall (0 without the new parameters,
+                    # see param_def_shortfall_max).
+                    _shortfall = self.vars["def_shortfall"][k]
+                    constraints.append(_shortfall <= self.param_def_shortfall_max[k])
                     constraints.append(
-                        total_energy_expr + _tekort
+                        total_energy_expr + _shortfall
                         >= self.param_target_energy[k]
                         - M_energy * (1 - self.param_energy_active[k])
                     )
-                    # PLANWAARDE: bovengrens als Parameter. Zonder energy_max is hij
-                    # gelijk aan de eis (actief) of M_energy (niet actief): gedrag 0.18.3.
+                    # PLANWAARDE: upper bound as a Parameter. Without energy_max it equals the
+                    # requirement (active) or M_energy (inactive): upstream behaviour.
                     constraints.append(total_energy_expr <= self.param_def_energy_upper[k])
 
             # Generic Constraints (Window)
@@ -4945,14 +4949,17 @@ class Optimization:
             p_def_k = get_val(self.vars["p_deferrable"][k])
             opt_tp[f"P_deferrable{k}"] = p_def_k
             p_def_sum += p_def_k
-            # PLANWAARDE: tekort op de eis, alleen als de load de knoppen gebruikt.
-            if k < len(self.param_def_tekort_max) and (self.param_def_tekort_max[k].value or 0) > 0:
-                _tk = float(self.vars["def_tekort"][k].value or 0.0)
+            # PLANWAARDE: shortfall on the requirement, only if the load uses the new parameters.
+            if (
+                k < len(self.param_def_shortfall_max)
+                and (self.param_def_shortfall_max[k].value or 0) > 0
+            ):
+                _tk = float(self.vars["def_shortfall"][k].value or 0.0)
                 _tk = 0.0 if _tk < 1.0 else _tk
-                opt_tp[f"deferrable{k}_tekort_wh"] = _tk
+                opt_tp[f"deferrable{k}_shortfall_wh"] = _tk
                 if _tk > 0:
                     self.logger.warning(
-                        f"Deferrable load {k}: eis niet haalbaar, tekort {_tk:.0f} Wh"
+                        f"Deferrable load {k}: requirement not reachable, shortfall {_tk:.0f} Wh"
                     )
 
         # Battery Results (#610). This independently recomputes the SOC/P_batt
@@ -5426,18 +5433,18 @@ class Optimization:
             * SOC_FINAL_DEVIATION_PENALTY_FACTOR
             * max(float(np.max(np.maximum(np.asarray(unit_load_cost, dtype=float), 0.0))), 1e-3)
         )
-        # PLANWAARDE: met een eindwaarde is er geen vaste eindstand meer.
+        # PLANWAARDE: with a terminal value there is no fixed end state.
         _fv = self.optim_conf.get("battery_terminal_value")
         for k in range(self.n_batt):
             if _fv is None:
-                self.param_final_value[k].value = 0.0
+                self.param_terminal_value[k].value = 0.0
             else:
                 _fvk = _fv[k] if isinstance(_fv, list) else _fv
-                self.param_final_value[k].value = float(_fvk)
+                self.param_terminal_value[k].value = float(_fvk)
         if _fv is not None:
             self.param_soc_final_penalty.value = 0.0
-        # PLANWAARDE: boete per kWh tekort op een eis; ruim boven elke inkoopprijs.
-        self.param_def_tekort_boete.value = 10.0 * max(
+        # PLANWAARDE: penalty per kWh of shortfall; well above any import price.
+        self.param_def_shortfall_penalty.value = 10.0 * max(
             float(np.max(np.abs(np.asarray(unit_load_cost, dtype=float)))), 1.0
         )
         self.param_prod_price.value = unit_prod_price
@@ -5712,7 +5719,7 @@ class Optimization:
             else:
                 self.param_target_energy[k].value = 0.0
                 self.param_energy_active[k].value = 0.0  # Constraint is relaxed (Big-M)
-            # PLANWAARDE: bovengrens en waarde per kWh.
+            # PLANWAARDE: upper bound and value per kWh.
             if k < len(self.param_def_energy_upper):
                 _emax = (self.optim_conf.get("deferrable_load_energy_max") or [])
                 _emax_k = _emax[k] if k < len(_emax) and _emax[k] is not None else 0
@@ -5726,12 +5733,12 @@ class Optimization:
                 else:
                     _up = _M
                 self.param_def_energy_upper[k].value = _up
-                _knop = _emax_k > 0 or (
+                _uses_new_params = _emax_k > 0 or (
                     k < len(self.optim_conf.get("deferrable_load_value") or [])
                     and (self.optim_conf["deferrable_load_value"][k] or 0) > 0
                 )
-                self.param_def_tekort_max[k].value = (
-                    self.param_target_energy[k].value if _knop else 0.0
+                self.param_def_shortfall_max[k].value = (
+                    self.param_target_energy[k].value if _uses_new_params else 0.0
                 )
                 _val = (self.optim_conf.get("deferrable_load_value") or [])
                 self.param_def_value[k].value = float(_val[k]) if k < len(_val) and _val[k] else 0.0
@@ -6036,7 +6043,7 @@ class Optimization:
             elif (
                 has_operating_requirement
                 or is_sequence
-                or (  # PLANWAARDE: alleen een energy_max, geen eis
+                or (  # PLANWAARDE: only an energy_max, no requirement
                     k < len(self.optim_conf.get("deferrable_load_energy_max") or [])
                     and (self.optim_conf["deferrable_load_energy_max"][k] or 0) > 0
                 )

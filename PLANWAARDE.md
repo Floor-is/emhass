@@ -1,3 +1,3 @@
-# PLANWAARDE-fork van EMHASS
+# planwaarde fork of EMHASS
 
-De uitleg van deze fork staat in [`.github/README.md`](.github/README.md) (de voorpagina van de repo).
+The description of this fork is in [`.github/README.md`](.github/README.md) (the repository front page).
