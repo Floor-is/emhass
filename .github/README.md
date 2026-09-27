@@ -1,60 +1,56 @@
-# EMHASS — fork `planwaarde`
+# EMHASS — `planwaarde` fork
 
-> **Op zoek naar EMHASS?** Die staat hier: **[davidusb-geek/emhass](https://github.com/davidusb-geek/emhass)**,
-> met de documentatie op **[emhass.readthedocs.io](https://emhass.readthedocs.io/)** en de Home Assistant-add-on in
-> **[davidusb-geek/emhass-add-on](https://github.com/davidusb-geek/emhass-add-on)**. Gebruik die, tenzij je precies
-> nodig hebt wat hieronder staat.
->
-> *English: this is a small, private-use fork of EMHASS that adds a terminal value for the battery and a value per
-> kWh for a deferrable load. For EMHASS itself, go to the links above.*
+> **Looking for EMHASS?** It lives here: **[davidusb-geek/emhass](https://github.com/davidusb-geek/emhass)**,
+> with documentation at **[emhass.readthedocs.io](https://emhass.readthedocs.io/)** and the Home Assistant add-on at
+> **[davidusb-geek/emhass-add-on](https://github.com/davidusb-geek/emhass-add-on)**. Use those unless you need
+> exactly what is described below.
 
-Deze fork volgt de officiële EMHASS-releases en voegt drie optionele parameters toe. Laat je ze weg, dan
-rekent hij hetzelfde als de upstream-versie waarop hij gebaseerd is; zie "Zo wordt hij getoetst".
+This fork tracks the official EMHASS releases and adds three optional parameters. Leave them out and it
+computes the same results as the upstream release it is based on; see "How it is tested".
 
-## Waarom een fork
+## Why a fork
 
-Wij sturen met EMHASS een thuisbatterij, zonnepanelen en een elektrische auto op dynamische
-kwartierprijzen. Twee dingen konden we met de configuratie van EMHASS 0.18.3 niet uitdrukken. We hebben
-dat met lokale runs op onze eigen invoer vastgesteld, niet alleen uit de documentatie afgeleid.
+We use EMHASS to run a home battery, solar panels and an electric car on dynamic quarter-hour prices. There
+were two things we could not express with the configuration of EMHASS 0.18.3. We established both with
+local runs on our own inputs, not just by reading the documentation.
 
-1. **De accu eindigt elk dayahead-plan op zijn beginstand.** Zonder `soc_final` valt EMHASS terug op
-   `soc_init`, met een boete van 100 × de duurste inkoopprijs per kWh afwijking. Op papier is dat een
-   zachte eis, in de praktijk een harde. De planner mag de accu daardoor niet leegmaken, ook niet
-   wanneer dat geld oplevert. Een vaste `soc_final` lost dat niet op: elke vaste waarde is op de meeste
-   dagen verkeerd.
-2. **Een kWh in de auto heeft geen waarde voor de planner.** De auto is een deferrable load met een
-   vaste energie-eis, dus EMHASS laadt precies die eis en geen kWh meer, ook als er goedkope stroom is.
-   `deferrable_load_max_cost` werkt alles-of-niets, en een negatieve `cost_forecast_per_deferrable_load`
-   vervangt het tarief in plaats van er iets bij op te tellen.
+1. **The battery ends every day-ahead plan at its starting state of charge.** Without `soc_final`, EMHASS
+   falls back to `soc_init`, with a penalty of 100 × the highest import price per kWh of deviation. On paper
+   that is a soft constraint; in practice it is a hard one. The planner cannot run the battery down, even
+   when doing so would save money. A fixed `soc_final` does not solve this: any fixed value is wrong on
+   most days.
+2. **A kWh put into the car has no value to the planner.** The car is a deferrable load with a fixed energy
+   requirement, so EMHASS charges exactly that amount and not one kWh more, even when cheap power is
+   available. `deferrable_load_max_cost` is all-or-nothing, and a negative
+   `cost_forecast_per_deferrable_load` replaces the tariff instead of adding to it.
 
-Beide punten staan ook upstream open: [#1093](https://github.com/davidusb-geek/emhass/issues/1093) (begon als
-"accu laadt niet door"; de discussie gaat over `soc_final` als vaste eindstand) en
-[#547](https://github.com/davidusb-geek/emhass/issues/547) (vergoeding per kWh voor een EV-load). We hebben
-er zelf een fork van gemaakt omdat we het nu nodig hebben. De code kan later upstream worden aangeboden; dat
-is geen doel van deze fork.
+Both are open upstream: [#1093](https://github.com/davidusb-geek/emhass/issues/1093) (it started as "battery
+won't charge past ~50-60 %"; the discussion is about `soc_final` as a fixed end state) and
+[#547](https://github.com/davidusb-geek/emhass/issues/547) (a reimbursement rate per kWh for an EV load). We made
+our own fork because we need this now. The code may be offered upstream later; that is not a goal of this fork.
 
-## Wat de fork toevoegt
+## What the fork adds
 
-Drie runtime-parameters, ook bruikbaar als config-sleutel. Alle drie staan standaard uit.
+Three runtime parameters, also usable as config keys. All three are off by default.
 
-| parameter | eenheid | wat hij doet |
+| parameter | unit | what it does |
 |---|---|---|
-| `battery_terminal_value` | EUR/kWh (getal, of lijst per accu) | Geen vaste eindstand meer: de energie die aan het eind van de horizon in de accu zit, is `v` per kWh waard. `0` = vrij tot `battery_minimum_state_of_charge`. Weglaten = gedrag van upstream. |
-| `deferrable_load_energy_max` | Wh per load | De energie-eis wordt een band: `eis ≤ E ≤ max`, met de eis (`operating_hours × nominal_power`) als vloer. Ligt de eis boven het maximum, dan wint de eis. |
-| `deferrable_load_value` | EUR/kWh per load | Elke kWh in de load levert `v` op. Boven de vloer laadt de load alleen in kwartieren waar een kWh minder kost dan `v`. |
+| `battery_terminal_value` | EUR/kWh (number, or list per battery) | No fixed end state: the energy left in the battery at the end of the horizon is worth `v` per kWh. `0` = free to go down to `battery_minimum_state_of_charge`. Omitted = upstream behaviour. |
+| `deferrable_load_energy_max` | Wh per load | The energy requirement becomes a band, `requirement ≤ E ≤ max`, with the requirement (`operating_hours × nominal_power`) as the floor. If the requirement exceeds the maximum, the requirement wins. |
+| `deferrable_load_value` | EUR/kWh per load | Every kWh into the load earns `v`. Above the floor, the load only charges in time steps where a kWh costs less than `v`. |
 
-Daarnaast, alleen actief als een van de twee load-parameters gezet is:
+In addition, active only when one of the two load parameters is set:
 
-- **Geen infeasible bij een onhaalbare eis.** Past de vloer niet in het venster, dan laadt EMHASS wat
-  kan en zet het tekort in kolom `deferrable<k>_tekort_wh`, met een waarschuwing in de log.
-- **Cache-vriendelijk.** De drie parameters zijn `cp.Parameter`s en staan bij de runtime-sleutels van
-  `OptimizationCache`. Een nieuwe waarde geeft dus een cache-hit, en de volgende solve rekent met die
-  nieuwe waarde.
+- **No infeasible problem when the requirement cannot be met.** If the floor does not fit in the window,
+  EMHASS charges what it can and reports the shortfall in column `deferrable<k>_tekort_wh` (*tekort* is
+  Dutch for shortfall), with a warning in the log.
+- **Cache-friendly.** The three parameters are `cp.Parameter`s and are listed among the runtime keys of
+  `OptimizationCache`. A new value therefore gives a cache hit, and the next solve uses the new value.
 
-Beperking: met `deferrable_load_max_cost` > 0 blijft de eis een gelijkheid; de fork logt dan dat
-`deferrable_load_energy_max` genegeerd wordt.
+Limitation: with `deferrable_load_max_cost` > 0 the requirement stays an equality; the fork then logs that
+`deferrable_load_energy_max` is ignored.
 
-### Voorbeeld
+### Example
 
 ```json
 POST /action/dayahead-optim
@@ -71,44 +67,45 @@ POST /action/dayahead-optim
 }
 ```
 
-De auto krijgt hier minstens 10 kWh (0,91 u × 11 kW) vóór stap 38, en hoogstens 40 kWh. Alles boven die
-10 kWh alleen waar een kWh minder kost dan €0,539. De accu mag onder zijn beginstand eindigen als de
-energie daarin minder dan €0,18 per kWh waard is.
+Here the car gets at least 10 kWh (0.91 h × 11 kW) before time step 38, and at most 40 kWh. Anything above
+those 10 kWh is only charged where a kWh costs less than €0.539. The battery may end below its starting state
+of charge if the energy in it is worth less than €0.18 per kWh.
 
-## Zo wordt hij getoetst
+## How it is tested
 
-- `tests/test_planwaarde.py`: het omslagpunt van de eindwaarde in euro's, vloer/max/waarde bij dure, goedkope
-  en gemengde prijzen, een onhaalbare eis, min = max, eis > max, negatieve prijzen, tie-break, 0 of ≥ 4,1 kW, een
-  cache-hit met gewijzigde waarden, en zonder parameters hetzelfde als upstream. De tests zijn ook rood gezien:
-  op de upstream-versie en op bewust kapotte varianten van de patch.
-- De upstream-tests die de optimalisatie raken, draaien mee.
-- **Image:** een tag `v<upstream>-planwaarde.<n>` bouwt `ghcr.io/floor-is/emhass:<tag>` (aarch64 en amd64),
-  langs dezelfde route als de officiële image. Er wordt pas gepusht als de tests groen zijn op de broncode
-  én in het gebouwde image.
-- **Upstream-wacht:** dagelijks herbaseert een workflow de patch op de nieuwste upstream-release en draait de
-  tests. Een conflict of een rode test maakt de run rood; groen levert tak `planwaarde-op-<tag>` op. Een nieuwe
-  release komt nooit vanzelf in het image: dat vraagt een nieuwe tag.
+- `tests/test_planwaarde.py`: the break-even point of the terminal value in euros; floor/max/value under
+  expensive, cheap and mixed prices; an unreachable requirement; min = max; requirement > max; negative
+  prices; tie-break; 0 or ≥ 4.1 kW; a cache hit with changed values; and identical to upstream without the
+  parameters. The tests have also been seen failing: on the upstream release and on deliberately broken
+  variants of the patch.
+- The upstream tests that cover the optimisation run as well.
+- **Image:** a tag `v<upstream>-planwaarde.<n>` builds `ghcr.io/floor-is/emhass:<tag>` (aarch64 and amd64),
+  along the same route as the official image. Nothing is pushed unless the tests pass on the source *and*
+  inside the built image.
+- **Upstream watch:** a daily workflow rebases the patch onto the latest upstream release and runs the tests.
+  A conflict or a failing test turns the run red; green produces a branch `planwaarde-op-<tag>`. A new release
+  never reaches the image by itself: that takes a new tag.
 
-## Takken en tags
+## Branches and tags
 
-- `planwaarde` (standaardtak): de patch op de laatste upstream-release, nu v0.18.4.
-- `v0.18.4-planwaarde.1`: huidige release. ⛔ `v0.18.3-planwaarde.1` is een tussenstap met een oude
-  parameternaam (`battery_final_value`); niet gebruiken.
-- De overige takken zijn kopieën van upstream-takken, meegekomen bij het forken.
+- `planwaarde` (default branch): the patch on the latest upstream release, currently v0.18.4.
+- `v0.18.4-planwaarde.1`: current release. ⛔ `v0.18.3-planwaarde.1` is an intermediate step with an old
+  parameter name (`battery_final_value`); do not use it.
+- The other branches are copies of upstream branches that came along with the fork.
 
-## Home Assistant-add-on
+## Home Assistant add-on
 
-[Floor-is/emhass-planwaarde-addon](https://github.com/Floor-is/emhass-planwaarde-addon) draait deze fork. Hij
-is een kopie van de officiële add-on en kan ernaast draaien: eigen slug, poort 5001, en geen toegang tot `/share`.
-Draai je hem naast de officiële add-on, zet dan `continual_publish: false` in zijn `config.json`. Beide
-publiceren anders onder dezelfde sensornamen.
+[Floor-is/emhass-planwaarde-addon](https://github.com/Floor-is/emhass-planwaarde-addon) runs this fork. It is a
+copy of the official add-on and can run alongside it: its own slug, port 5001, and no access to `/share`. If
+you run it next to the official add-on, set `continual_publish: false` in its `config.json`. Otherwise both
+publish under the same sensor names.
 
 ## Status
 
-Nog niet in productie. De fork draait eerst een tijd in schaduw naast de officiële add-on.
+Not in production yet. The fork will first run in shadow next to the official add-on for a while.
 
-## Licentie en herkomst
+## Licence and credits
 
-MIT, zoals EMHASS. Alle eer voor EMHASS zelf gaat naar [David Hernandez](https://github.com/davidusb-geek) en de
-bijdragers van [davidusb-geek/emhass](https://github.com/davidusb-geek/emhass/graphs/contributors). Deze fork
-voegt alleen de wijzigingen hierboven toe; ze staan als losse commits op de tak `planwaarde`.
+MIT, like EMHASS. All credit for EMHASS itself goes to [David Hernandez](https://github.com/davidusb-geek) and the
+[contributors to davidusb-geek/emhass](https://github.com/davidusb-geek/emhass/graphs/contributors). This fork only
+adds the changes described above; they are separate commits on the `planwaarde` branch.
