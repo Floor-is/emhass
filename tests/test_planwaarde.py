@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""Tests voor de PLANWAARDE-knoppen van deze fork.
+"""Tests for the parameters added by the `planwaarde` fork.
 
-- battery_terminal_value: waarde van de eindstand in plaats van een vaste eindstand.
-- deferrable_load_value / deferrable_load_energy_max: eis <= E <= max, waarde per kWh.
+- battery_terminal_value: a value for the end-of-horizon energy instead of a fixed end state.
+- deferrable_load_value / deferrable_load_energy_max: requirement <= E <= max, value per kWh.
 
-Synthetisch en zelfstandig (zelfde bouwer als test_multi_battery_optimization.py).
-Verwachte getallen zijn vooraf afgeleid, niet na afloop overgenomen.
+Synthetic and self-contained (same builder as test_multi_battery_optimization.py).
+Expected numbers are derived beforehand, not copied from a run.
 """
 
 import logging
@@ -18,14 +18,14 @@ from emhass.command_line import OptimizationCache
 from emhass.optimization import Optimization
 
 TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
-N = 48  # 24 uur in stappen van 30 minuten
-DT = 0.5  # uur per stap
+N = 48  # 24 hours in 30-minute steps
+DT = 0.5  # hours per step
 ETA_DIS, ETA_CHG, W_DIS = 0.939, 0.946, 0.064
 CAP = 48000
 SOC_MIN = 0.08
 
 
-def bouw(optim_overrides=None, def_load=None):
+def build(optim_overrides=None, def_load=None):
     logger = logging.getLogger("planwaarde_test")
     logger.handlers = []
     logger.addHandler(logging.NullHandler())
@@ -72,7 +72,7 @@ def bouw(optim_overrides=None, def_load=None):
                 "treat_deferrable_load_as_semi_cont": [False],
                 "set_deferrable_load_single_constant": [False],
                 "set_deferrable_startup_penalty": [False],
-                "operating_hours_of_each_deferrable_load": [def_load["uren"]],
+                "operating_hours_of_each_deferrable_load": [def_load["hours"]],
                 "start_timesteps_of_each_deferrable_load": [0],
                 "end_timesteps_of_each_deferrable_load": [0],
             }
@@ -108,16 +108,16 @@ def bouw(optim_overrides=None, def_load=None):
     )
 
 
-def invoer(lc, pp, pv=0.0, load=0.0):
+def inputs(lc, pp, pv=0.0, load=0.0):
     index = pd.date_range("2026-09-28", periods=N, freq="30min", tz="Europe/Amsterdam")
-    lijst = lambda x: x if isinstance(x, list) else [x] * N  # noqa: E731
+    as_list = lambda x: x if isinstance(x, list) else [x] * N  # noqa: E731
     df = pd.DataFrame(index=index)
-    df["unit_load_cost"] = lijst(lc)
-    df["unit_prod_price"] = lijst(pp)
-    return df, pd.Series(lijst(pv), index=index), pd.Series(lijst(load), index=index)
+    df["unit_load_cost"] = as_list(lc)
+    df["unit_prod_price"] = as_list(pp)
+    return df, pd.Series(as_list(pv), index=index), pd.Series(as_list(load), index=index)
 
 
-def draai(opt, df, p_pv, p_load, soc_init):
+def solve(opt, df, p_pv, p_load, soc_init):
     res = opt.perform_dayahead_forecast_optim(df, p_pv, p_load, soc_init=soc_init)
     assert opt.optim_status in ("Optimal", "Optimal (Relaxed)"), opt.optim_status
     return res
@@ -127,198 +127,213 @@ def ev_kwh(res):
     return float(res["P_deferrable0"].sum()) * DT / 1000
 
 
-class TestEindwaarde(unittest.TestCase):
-    """battery_terminal_value. Vlak: inkoop 0,40, teruglever 0,35, geen PV/last, accu vol.
-    Een AC-kWh naar het net levert 0,35 − W_DIS op en kost v/ETA_DIS aan eindwaarde.
-    Omslag v* = (0,35 − 0,064) × 0,939 = 0,2686."""
+class TestTerminalValue(unittest.TestCase):
+    """battery_terminal_value. Flat prices: import 0.40, export 0.35, no PV/load, battery full.
+    One AC kWh exported earns 0.35 - W_DIS and costs v/ETA_DIS of terminal value.
+    Break-even v* = (0.35 - 0.064) * 0.939 = 0.2686."""
 
-    V_STER = (0.35 - W_DIS) * ETA_DIS
+    V_STAR = (0.35 - W_DIS) * ETA_DIS
 
-    def eind(self, overrides):
-        df, pv, load = invoer(0.40, 0.35)
-        res = draai(bouw(overrides), df, pv, load, soc_init=0.995)
+    def end_soc(self, overrides):
+        df, pv, load = inputs(0.40, 0.35)
+        res = solve(build(overrides), df, pv, load, soc_init=0.995)
         return float(res["SOC_opt"].iloc[-1])
 
-    def test_zonder_knop_eindigt_op_soc_init(self):
-        # Gedrag 0.18.3: soc_final valt terug op soc_init (boete 100x).
-        self.assertAlmostEqual(self.eind(None), 0.995, delta=0.005)
+    def test_without_parameter_ends_at_soc_init(self):
+        # Upstream behaviour: soc_final falls back to soc_init (100x penalty).
+        self.assertAlmostEqual(self.end_soc(None), 0.995, delta=0.005)
 
-    def test_omslagpunt(self):
-        self.assertAlmostEqual(self.V_STER, 0.2686, delta=0.0005)
-        self.assertLess(self.eind({"battery_terminal_value": 0.26}), SOC_MIN + 0.01)
-        self.assertGreater(self.eind({"battery_terminal_value": 0.28}), 0.99)
+    def test_break_even(self):
+        self.assertAlmostEqual(self.V_STAR, 0.2686, delta=0.0005)
+        self.assertLess(self.end_soc({"battery_terminal_value": 0.26}), SOC_MIN + 0.01)
+        self.assertGreater(self.end_soc({"battery_terminal_value": 0.28}), 0.99)
 
-    def test_nul_betekent_tot_de_vloer(self):
-        self.assertLess(self.eind({"battery_terminal_value": 0.0}), SOC_MIN + 0.01)
+    def test_zero_means_down_to_the_minimum(self):
+        self.assertLess(self.end_soc({"battery_terminal_value": 0.0}), SOC_MIN + 0.01)
 
-    def test_lijst_per_accu(self):
-        self.assertLess(self.eind({"battery_terminal_value": [0.26]}), SOC_MIN + 0.01)
+    def test_list_per_battery(self):
+        self.assertLess(self.end_soc({"battery_terminal_value": [0.26]}), SOC_MIN + 0.01)
 
 
-class TestWaardeInDeLoad(unittest.TestCase):
-    """deferrable_load_value + deferrable_load_energy_max. Load 11 kW, vloer 10 kWh,
-    max 40 kWh, waarde 0,54. Accu op de vloer en eindwaarde 0, zodat hij alleen via
-    goedkope inkoop kan bijdragen; teruglever 0,05."""
+class TestLoadValue(unittest.TestCase):
+    """deferrable_load_value + deferrable_load_energy_max. Load 11 kW, floor 10 kWh,
+    max 40 kWh, value 0.54. Battery at its minimum and terminal value 0, so it can only
+    contribute through cheap imports; export price 0.05."""
 
     P = 11000
-    VLOER, MAX, V = 10.0, 40.0, 0.54
+    FLOOR, MAX, V = 10.0, 40.0, 0.54
 
     def kwh(self, lc, **extra):
-        df, pv, load = invoer(lc, 0.05, load=300.0)
+        df, pv, load = inputs(lc, 0.05, load=300.0)
         conf = {
             "battery_terminal_value": 0.0,
             "deferrable_load_value": [self.V],
             "deferrable_load_energy_max": [self.MAX * 1000],
         }
         conf.update(extra)
-        opt = bouw(conf, def_load={"p": self.P, "uren": self.VLOER * 1000 / self.P})
-        return ev_kwh(draai(opt, df, pv, load, soc_init=SOC_MIN))
+        opt = build(conf, def_load={"p": self.P, "hours": self.FLOOR * 1000 / self.P})
+        return ev_kwh(solve(opt, df, pv, load, soc_init=SOC_MIN))
 
-    def test_duur_alleen_de_vloer(self):
-        self.assertAlmostEqual(self.kwh(0.60), self.VLOER, delta=0.1)
+    def test_expensive_only_the_floor(self):
+        self.assertAlmostEqual(self.kwh(0.60), self.FLOOR, delta=0.1)
 
-    def test_goedkoop_tot_het_maximum(self):
+    def test_cheap_up_to_the_maximum(self):
         self.assertAlmostEqual(self.kwh(0.30), self.MAX, delta=0.1)
 
-    def test_gemengd_vloer_plus_goedkope_stappen(self):
-        # 4 stappen van 30 min op 0,30 ⇒ 4 × 11 × 0,5 = 22 kWh direct; de accu kan daar
-        # ook laden voor later (0,30/(0,946·0,939) + 0,064 ≈ 0,40 < 0,54).
+    def test_mixed_floor_plus_cheap_steps(self):
+        # 4 steps of 30 min at 0.30 => 4 * 11 * 0.5 = 22 kWh directly; the battery can also
+        # charge there for later (0.30/(0.946*0.939) + 0.064 ~= 0.40 < 0.54).
         lc = [0.30 if 20 <= i < 24 else 0.60 for i in range(N)]
         e = self.kwh(lc)
         self.assertGreater(e, 22.0 - 0.1)
         self.assertLessEqual(e, self.MAX + 0.1)
 
-    def test_zonder_waarde_blijft_eis_een_gelijkheid(self):
-        # energy_max zonder value: de vloer is genoeg, meer kost alleen geld.
-        self.assertAlmostEqual(self.kwh(0.30, deferrable_load_value=[0.0]), self.VLOER, delta=0.1)
+    def test_without_value_the_requirement_is_enough(self):
+        # energy_max without a value: the floor suffices, anything more only costs money.
+        self.assertAlmostEqual(self.kwh(0.30, deferrable_load_value=[0.0]), self.FLOOR, delta=0.1)
 
 
-class TestAlleenMaximum(unittest.TestCase):
-    """Een load zonder eis (uren 0) maar met energy_max blijft actief."""
+class TestMaximumOnly(unittest.TestCase):
+    """A load without a requirement (hours 0) but with energy_max stays active."""
 
     def kwh(self, v):
-        df, pv, load = invoer(0.30, 0.05)
-        opt = bouw(
+        df, pv, load = inputs(0.30, 0.05)
+        opt = build(
             {
                 "battery_terminal_value": 0.0,
                 "deferrable_load_value": [v],
                 "deferrable_load_energy_max": [30000],
             },
-            def_load={"p": 11000, "uren": 0},
+            def_load={"p": 11000, "hours": 0},
         )
-        return ev_kwh(draai(opt, df, pv, load, soc_init=SOC_MIN))
+        return ev_kwh(solve(opt, df, pv, load, soc_init=SOC_MIN))
 
-    def test_waarde_boven_prijs_vult_tot_max(self):
+    def test_value_above_price_fills_to_max(self):
         self.assertAlmostEqual(self.kwh(0.60), 30.0, delta=0.1)
 
-    def test_waarde_onder_prijs_laadt_niets(self):
+    def test_value_below_price_charges_nothing(self):
         self.assertLess(self.kwh(0.20), 0.1)
 
 
-class TestZonderKnoppen(unittest.TestCase):
-    """Zonder de nieuwe sleutels is de eis een gelijkheid, zoals in 0.18.3."""
+class TestWithoutParameters(unittest.TestCase):
+    """Without the new keys the requirement is an equality, as upstream."""
 
-    def test_eis_is_gelijkheid(self):
-        df, pv, load = invoer(0.30, 0.05)
-        opt = bouw(None, def_load={"p": 11000, "uren": 1.0})
-        self.assertAlmostEqual(ev_kwh(draai(opt, df, pv, load, soc_init=0.5)), 11.0, delta=0.1)
+    def test_requirement_is_equality(self):
+        df, pv, load = inputs(0.30, 0.05)
+        opt = build(None, def_load={"p": 11000, "hours": 1.0})
+        self.assertAlmostEqual(ev_kwh(solve(opt, df, pv, load, soc_init=0.5)), 11.0, delta=0.1)
 
 
 class TestCache(unittest.TestCase):
-    """De knoppen zijn runtime-sleutels: een andere waarde geeft een cache-HIT, en de
-    tweede solve op hetzelfde object gebruikt de nieuwe waarde (zoals command_line.py
-    doet: opt.optim_conf vervangen en opnieuw oplossen)."""
+    """The new parameters are runtime keys: a different value gives a cache HIT, and the
+    second solve on the same object uses the new value (as command_line.py does:
+    replace opt.optim_conf and solve again)."""
 
-    def test_cache_hit_met_nieuwe_waarden(self):
-        df, pv, load = invoer(0.40, 0.35)
-        opt = bouw({"battery_terminal_value": 0.28})
-        eerst = float(draai(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
+    def test_cache_hit_with_new_values(self):
+        df, pv, load = inputs(0.40, 0.35)
+        opt = build({"battery_terminal_value": 0.28})
+        first = float(solve(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
         conf2 = dict(opt.optim_conf, battery_terminal_value=0.26)
-        k1 = OptimizationCache._compute_cache_key(opt.optim_conf, opt.plant_conf, "profit", opt.retrieve_hass_conf, N)
-        k2 = OptimizationCache._compute_cache_key(conf2, opt.plant_conf, "profit", opt.retrieve_hass_conf, N)
-        self.assertEqual(k1, k2, "andere knopwaarde mag geen andere cache-sleutel geven")
+        k1 = OptimizationCache._compute_cache_key(
+            opt.optim_conf, opt.plant_conf, "profit", opt.retrieve_hass_conf, N
+        )
+        k2 = OptimizationCache._compute_cache_key(
+            conf2, opt.plant_conf, "profit", opt.retrieve_hass_conf, N
+        )
+        self.assertEqual(k1, k2, "a different parameter value must not change the cache key")
         opt.optim_conf = conf2
-        tweede = float(draai(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
-        self.assertGreater(eerst, 0.99)
-        self.assertLess(tweede, SOC_MIN + 0.01)
-        # en terug naar stock op hetzelfde object: sleutel weg ⇒ eindstand = soc_init
+        second = float(solve(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
+        self.assertGreater(first, 0.99)
+        self.assertLess(second, SOC_MIN + 0.01)
+        # and back to upstream on the same object: key removed => end state = soc_init
         opt.optim_conf = {k: v for k, v in conf2.items() if k != "battery_terminal_value"}
-        derde = float(draai(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
-        self.assertAlmostEqual(derde, 0.995, delta=0.005)
+        third = float(solve(opt, df, pv, load, 0.995)["SOC_opt"].iloc[-1])
+        self.assertAlmostEqual(third, 0.995, delta=0.005)
 
-    def test_cache_hit_load_knoppen(self):
-        df, pv, load = invoer(0.30, 0.05)
-        opt = bouw({"battery_terminal_value": 0.0, "deferrable_load_value": [0.60],
-                    "deferrable_load_energy_max": [30000]}, def_load={"p": 11000, "uren": 0})
-        self.assertAlmostEqual(ev_kwh(draai(opt, df, pv, load, SOC_MIN)), 30.0, delta=0.1)
+    def test_cache_hit_load_parameters(self):
+        df, pv, load = inputs(0.30, 0.05)
+        opt = build(
+            {
+                "battery_terminal_value": 0.0,
+                "deferrable_load_value": [0.60],
+                "deferrable_load_energy_max": [30000],
+            },
+            def_load={"p": 11000, "hours": 0},
+        )
+        self.assertAlmostEqual(ev_kwh(solve(opt, df, pv, load, SOC_MIN)), 30.0, delta=0.1)
         opt.optim_conf = dict(opt.optim_conf, deferrable_load_value=[0.20])
-        self.assertLess(ev_kwh(draai(opt, df, pv, load, SOC_MIN)), 0.1)
-        opt.optim_conf = dict(opt.optim_conf, deferrable_load_value=[0.60],
-                              deferrable_load_energy_max=[20000])
-        self.assertAlmostEqual(ev_kwh(draai(opt, df, pv, load, SOC_MIN)), 20.0, delta=0.1)
+        self.assertLess(ev_kwh(solve(opt, df, pv, load, SOC_MIN)), 0.1)
+        opt.optim_conf = dict(
+            opt.optim_conf, deferrable_load_value=[0.60], deferrable_load_energy_max=[20000]
+        )
+        self.assertAlmostEqual(ev_kwh(solve(opt, df, pv, load, SOC_MIN)), 20.0, delta=0.1)
 
 
-class TestGrenzen(unittest.TestCase):
-    """Vloer = eis (operating_hours × P), max = energy_max, waarde = value."""
+class TestBounds(unittest.TestCase):
+    """Floor = requirement (operating_hours * P), max = energy_max, value = value."""
 
-    def kwh(self, lc, eis_kwh, emax_kwh, v, uren_venster=None, extra=None):
-        df, pv, load = invoer(lc, 0.05)
-        conf = {"battery_terminal_value": 0.0, "deferrable_load_value": [v],
-                "deferrable_load_energy_max": [emax_kwh * 1000]}
-        if uren_venster:
-            conf["end_timesteps_of_each_deferrable_load"] = [int(uren_venster / DT)]
+    def kwh(self, lc, req_kwh, emax_kwh, v, window_hours=None, extra=None):
+        df, pv, load = inputs(lc, 0.05)
+        conf = {
+            "battery_terminal_value": 0.0,
+            "deferrable_load_value": [v],
+            "deferrable_load_energy_max": [emax_kwh * 1000],
+        }
+        if window_hours:
+            conf["end_timesteps_of_each_deferrable_load"] = [int(window_hours / DT)]
         conf.update(extra or {})
-        opt = bouw(conf, def_load={"p": 11000, "uren": eis_kwh * 1000 / 11000})
-        res = draai(opt, df, pv, load, SOC_MIN)
+        opt = build(conf, def_load={"p": 11000, "hours": req_kwh * 1000 / 11000})
+        res = solve(opt, df, pv, load, SOC_MIN)
         return ev_kwh(res), res
 
-    def test_min_is_max_is_de_oude_gelijkheid(self):
+    def test_min_equals_max_is_the_old_equality(self):
         e, _ = self.kwh(0.30, 15.0, 15.0, 0.60)
         self.assertAlmostEqual(e, 15.0, delta=0.1)
 
-    def test_kalender_wint_als_de_eis_boven_het_max_ligt(self):
-        # Floris/REGIE 27-9: maximum = max(helper, kalenderdoel)
+    def test_requirement_wins_when_above_the_maximum(self):
+        # maximum = max(configured maximum, calendar requirement)
         e, _ = self.kwh(0.60, 30.0, 20.0, 0.54)
         self.assertAlmostEqual(e, 30.0, delta=0.1)
 
-    def test_onhaalbare_eis_geeft_tekort_en_geen_infeasible(self):
-        # 2 uur × 11 kW = 22 kWh kan, 50 gevraagd ⇒ 22 geladen, tekort 28 kWh zichtbaar.
-        e, res = self.kwh(0.30, 50.0, 60.0, 0.54, uren_venster=2)
+    def test_unreachable_requirement_gives_shortfall_not_infeasible(self):
+        # 2 h * 11 kW = 22 kWh possible, 50 requested => 22 charged, 28 kWh shortfall reported.
+        e, res = self.kwh(0.30, 50.0, 60.0, 0.54, window_hours=2)
         self.assertAlmostEqual(e, 22.0, delta=0.1)
-        self.assertAlmostEqual(float(res["deferrable0_tekort_wh"].iloc[0]), 28000, delta=100)
+        self.assertAlmostEqual(float(res["deferrable0_shortfall_wh"].iloc[0]), 28000, delta=100)
 
-    def test_haalbare_eis_geeft_geen_tekort(self):
+    def test_reachable_requirement_gives_no_shortfall(self):
         _, res = self.kwh(0.60, 10.0, 40.0, 0.54)
-        self.assertEqual(float(res["deferrable0_tekort_wh"].iloc[0]), 0.0)
+        self.assertEqual(float(res["deferrable0_shortfall_wh"].iloc[0]), 0.0)
 
-    def test_zonder_knoppen_geen_tekortkolom(self):
-        df, pv, load = invoer(0.30, 0.05)
-        res = draai(bouw(None, def_load={"p": 11000, "uren": 1.0}), df, pv, load, 0.5)
-        self.assertNotIn("deferrable0_tekort_wh", res.columns)
+    def test_without_parameters_no_shortfall_column(self):
+        df, pv, load = inputs(0.30, 0.05)
+        res = solve(build(None, def_load={"p": 11000, "hours": 1.0}), df, pv, load, 0.5)
+        self.assertNotIn("deferrable0_shortfall_wh", res.columns)
 
-    def test_gelijke_prijs_en_waarde_laadt_niet_boven_de_vloer(self):
-        # tie-break via de waarde: v = 0,539 tegen inkoop precies 0,54
+    def test_price_equal_to_value_charges_only_the_floor(self):
+        # tie-break via the value: v = 0.539 against an import price of exactly 0.54
         e, _ = self.kwh(0.54, 10.0, 40.0, 0.539)
         self.assertAlmostEqual(e, 10.0, delta=0.1)
 
-    def test_negatieve_prijzen(self):
+    def test_negative_prices(self):
         lc = [-0.05 if 10 <= i < 14 else 0.60 for i in range(N)]
         e, res = self.kwh(lc, 10.0, 40.0, 0.54)
         self.assertGreaterEqual(e, 10.0 - 0.1)
         self.assertLessEqual(e, 40.0 + 0.1)
-        self.assertEqual(float(res["deferrable0_tekort_wh"].iloc[0]), 0.0)
-        # in de negatieve uren laadt hij vol vermogen
+        self.assertEqual(float(res["deferrable0_shortfall_wh"].iloc[0]), 0.0)
+        # full power during the negative-price steps
         self.assertTrue((res["P_deferrable0"].iloc[10:14] > 10999).all())
 
-    def test_nul_of_minstens_4_1_kw(self):
-        # REGIE/Floris 27-9: laden als 0 of 4,1-11 kW (minimum_power, semi_cont uit).
-        # Oplopende prijs, vloer = max = 12 kWh: zonder minimum wordt dat 11 + 1 kWh,
-        # dus 2 kW in de derde stap. Met minimum mag geen stap tussen 0 en 4,1 kW liggen.
+    def test_zero_or_at_least_4_1_kw(self):
+        # Charging at 0 or 4.1-11 kW (minimum_power, semi_cont off).
+        # Rising price, floor = max = 12 kWh: without a minimum that becomes 11 + 1 kWh,
+        # i.e. 2 kW in the third step. With the minimum no step may lie between 0 and 4.1 kW.
         lc = [0.60 + 0.001 * i for i in range(N)]
         e, res = self.kwh(lc, 12.0, 12.0, 0.0, extra={"minimum_power_of_deferrable_loads": [4100]})
         p = res["P_deferrable0"]
         self.assertTrue(((p < 1) | (p > 4100 - 1)).all(), p[(p >= 1) & (p <= 4099)].tolist())
         self.assertAlmostEqual(e, 12.0, delta=0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,57 @@
+# planwaarde fork: watches for a new upstream release and fails hard if the patch no
+# longer applies (rebase conflict) or no longer works (tests red).
+# Green: the rebased branch is pushed as `planwaarde-on-<tag>`. NO tag and NO image;
+# a new add-on version is a deliberate choice (push tag v<upstream>-planwaarde.<n>).
+name: "PLANWAARDE upstream watch"
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: planwaarde
+          fetch-depth: 0
+      - name: Determine upstream release and current base
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add upstream https://github.com/davidusb-geek/emhass.git
+          git fetch --quiet upstream --tags
+          latest=$(gh api repos/davidusb-geek/emhass/releases/latest --jq .tag_name)
+          base=$(git describe --tags --abbrev=0 --exclude '*-planwaarde*' HEAD)
+          echo "upstream release: $latest · base of planwaarde: $base"
+          test -n "$latest" && test -n "$base"
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          if [ "$latest" = "$base" ] || git ls-remote --exit-code --heads origin "planwaarde-on-$latest" >/dev/null; then
+            echo "nothing to do"; echo "run=no" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=yes" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Rebase onto the new release (conflict = red)
+        if: steps.tag.outputs.run == 'yes'
+        run: |
+          git config user.name "planwaarde-watch"
+          git config user.email "planwaarde-watch@users.noreply.github.com"
+          git checkout -b "planwaarde-on-${{ steps.tag.outputs.latest }}"
+          git rebase --onto "${{ steps.tag.outputs.latest }}" "${{ steps.tag.outputs.base }}"
+      - name: Install uv
+        if: steps.tag.outputs.run == 'yes'
+        uses: astral-sh/setup-uv@v5
+      - name: Tests on the rebased branch (red = patch no longer works)
+        if: steps.tag.outputs.run == 'yes'
+        run: |
+          uv sync --extra test
+          uv run pytest -q tests/test_planwaarde.py tests/test_optimization.py tests/test_multi_battery_optimization.py tests/test_runtime_params.py tests/test_schema_contract.py
+      - name: Keep the rebased branch
+        if: steps.tag.outputs.run == 'yes'
+        run: git push origin "planwaarde-on-${{ steps.tag.outputs.latest }}"
