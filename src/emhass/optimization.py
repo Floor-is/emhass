@@ -276,6 +276,13 @@ class Optimization:
             cp.Parameter(self.num_timesteps, name=f"cost_per_load_{k}")
             for k in range(num_def_loads)
         ]
+        # PLANWAARDE: waarde per kWh in een deferrable load, en de bovengrens van zijn energie.
+        self.param_def_value = [
+            cp.Parameter(nonneg=True, name=f"def_value_{k}") for k in range(num_def_loads)
+        ]
+        self.param_def_energy_upper = [
+            cp.Parameter(nonneg=True, name=f"def_energy_upper_{k}") for k in range(num_def_loads)
+        ]
 
         # Per-battery Scalar Parameters (#610). A list of length self.n_batt,
         # one cp.Parameter per battery, indexed k in range(self.n_batt) - this
@@ -2727,6 +2734,13 @@ class Optimization:
                 ][k] * _bc["eff_chg"][k]
                 objective_terms.append(-scale * self.param_final_value[k] * cp.sum(_flow))
 
+        # PLANWAARDE: waarde per kWh in een deferrable load, bovenop wat hij kost.
+        _p_def = self.vars.get("p_deferrable", None)
+        if _p_def is not None:
+            for k, _v in enumerate(self.param_def_value):
+                if k < len(_p_def):
+                    objective_terms.append(scale * _v * cp.sum(_p_def[k]))
+
         # Battery-first priority penalty (issue #834/#1002). battery_first_penalty
         # is the grid import that occurs while the battery is still above its
         # minimum SoC. Priced at BATTERY_FIRST_IMPORT_PENALTY_FACTOR times the
@@ -4453,6 +4467,13 @@ class Optimization:
                     self.deferrable_with_max_cost[k] = (max_cost[k], load_is_scheduled)
 
                     self.logger.debug(f"Deferrable load {k}: max cost constraint added")
+                    # PLANWAARDE: deze tak houdt de eis als gelijkheid; energy_max werkt hier niet.
+                    _emax_mc = self.optim_conf.get("deferrable_load_energy_max") or []
+                    if k < len(_emax_mc) and (_emax_mc[k] or 0) > 0:
+                        self.logger.warning(
+                            f"Deferrable load {k}: deferrable_load_energy_max wordt genegeerd "
+                            "omdat deferrable_load_max_cost gezet is"
+                        )
 
                 # Big-M value: maximum possible energy consumption
                 # = max_power * num_timesteps * time_step
@@ -4486,11 +4507,9 @@ class Optimization:
                         >= self.param_target_energy[k]
                         - M_energy * (1 - self.param_energy_active[k])
                     )
-                    constraints.append(
-                        total_energy_expr
-                        <= self.param_target_energy[k]
-                        + M_energy * (1 - self.param_energy_active[k])
-                    )
+                    # PLANWAARDE: bovengrens als Parameter. Zonder energy_max is hij
+                    # gelijk aan de eis (actief) of M_energy (niet actief): gedrag 0.18.3.
+                    constraints.append(total_energy_expr <= self.param_def_energy_upper[k])
 
             # Generic Constraints (Window)
 
@@ -5664,6 +5683,22 @@ class Optimization:
             else:
                 self.param_target_energy[k].value = 0.0
                 self.param_energy_active[k].value = 0.0  # Constraint is relaxed (Big-M)
+            # PLANWAARDE: bovengrens en waarde per kWh.
+            if k < len(self.param_def_energy_upper):
+                _emax = (self.optim_conf.get("deferrable_load_energy_max") or [])
+                _emax_k = _emax[k] if k < len(_emax) and _emax[k] is not None else 0
+                _M = nominal_power * n * self.time_step * 2
+                if k in window_empty_loads:
+                    _up = 0.0
+                elif _emax_k > 0:
+                    _up = max(float(_emax_k), self.param_target_energy[k].value)
+                elif self.param_energy_active[k].value:
+                    _up = self.param_target_energy[k].value
+                else:
+                    _up = _M
+                self.param_def_energy_upper[k].value = _up
+                _val = (self.optim_conf.get("deferrable_load_value") or [])
+                self.param_def_value[k].value = float(_val[k]) if k < len(_val) and _val[k] else 0.0
 
             # For single-constant (binary) loads, set the required timesteps
             is_single_const = self.optim_conf["set_deferrable_load_single_constant"][k]
@@ -5962,7 +5997,14 @@ class Optimization:
                     f"Deferrable load {k}: deactivated (operating requirement met "
                     "by def_current_operating_timesteps, issue #983)"
                 )
-            elif (has_operating_requirement or is_sequence) and not window_outside_horizon:
+            elif (
+                has_operating_requirement
+                or is_sequence
+                or (  # PLANWAARDE: alleen een energy_max, geen eis
+                    k < len(self.optim_conf.get("deferrable_load_energy_max") or [])
+                    and (self.optim_conf["deferrable_load_energy_max"][k] or 0) > 0
+                )
+            ) and not window_outside_horizon:
                 self.param_load_active[k].value = 1.0
             else:
                 self.param_load_active[k].value = 0.0
