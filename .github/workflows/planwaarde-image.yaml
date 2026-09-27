@@ -1,0 +1,137 @@
+# PLANWAARDE-fork: image voor de eigen Home Assistant-add-on.
+# Zelfde route als upstream publish_docker.yaml (buildx per architectuur, push by digest,
+# manifest samenvoegen), met twee harde poorten ervoor: de testsuite op de broncode en
+# de planwaarde-tests IN het gebouwde image. Faalt een van beide, dan wordt er niets gepusht.
+name: "PLANWAARDE image"
+
+on:
+  push:
+    tags: ["v*-planwaarde.*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install EMHASS with test dependencies
+        run: uv sync --extra test
+      - name: Planwaarde-tests
+        run: uv run pytest -q tests/test_planwaarde.py
+      - name: Upstream-tests die de optimalisatie raken
+        run: >
+          uv run pytest -q tests/test_optimization.py tests/test_multi_battery_optimization.py
+          tests/test_soc_recovery_prototype.py tests/test_deferrable_runtime_renormalise.py
+          tests/test_runtime_params.py tests/test_deferrable_states.py tests/test_schema_contract.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        platform:
+          [
+            { target_arch: amd64, buildx: "linux/amd64", os_version: debian },
+            { target_arch: aarch64, buildx: "linux/arm64", os_version: debian },
+          ]
+    steps:
+      - name: lowercase repo
+        run: echo "IMAGE_NAME_LOWER=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image (lokaal)
+        id: cache
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform.buildx }}
+          build-args: |
+            TARGETARCH=${{ matrix.platform.target_arch }}
+            os_version=${{ matrix.platform.os_version }}
+          load: true
+      - name: Planwaarde-tests in het image
+        run: >
+          docker run --rm --platform ${{ matrix.platform.buildx }}
+          -v "$PWD/tests/test_planwaarde.py:/app/tests/test_planwaarde.py:ro"
+          --entrypoint python ${{ steps.cache.outputs.imageid }}
+          -m unittest discover -v -s /app/tests -p test_planwaarde.py
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform.buildx }}
+          build-args: |
+            TARGETARCH=${{ matrix.platform.target_arch }}
+            os_version=${{ matrix.platform.os_version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: digests-${{ matrix.platform.target_arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: lowercase repo
+        run: echo "IMAGE_NAME_LOWER=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
+      - uses: actions/download-artifact@v6
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          tags: |
+            type=ref,event=tag
+            type=sha
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}@sha256:%s ' *)
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ steps.meta.outputs.version }}
