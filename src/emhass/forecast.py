@@ -864,16 +864,56 @@ class Forecast:
         return data
 
     def _get_weather_list(self) -> pd.DataFrame:
-        """Helper to retrieve weather data from a passed list."""
+        """Helper to retrieve weather data from a passed external PV forecast."""
         data_list = self.params["passed_data"]["pv_power_forecast"]
+        p10_list = self.params["passed_data"].get("pv_power_forecast_p10")
         forecast_dates = self.forecast_dates_tz
+        if data_list is not None and p10_list is not None and len(data_list) != len(p10_list):
+            self.logger.error(
+                "Passed pv_power_forecast/pv_power_forecast_p10 length mismatch: %d/%d",
+                len(data_list),
+                len(p10_list),
+            )
+            return None
         if data_list is None or (
             len(data_list) < len(forecast_dates)
             and self.params["passed_data"]["prediction_horizon"] is None
         ):
             self.logger.error(error_msg_list_not_long_enough)
             return None
+
         data_list = data_list[: len(forecast_dates)]
+
+        # #1128: an explicitly supplied external P10 companion must already
+        # have passed the strict pair validation/alignment in treat_runtimeparams.
+        # Still guard the Forecast boundary so a malformed direct caller cannot
+        # silently ignore or truncate P10. Validate even at bias=0: providing an
+        # invalid companion is an input error, while omitting the companion keeps
+        # the historical P50-only behavior unchanged.
+        if p10_list is not None:
+            if len(p10_list) < len(forecast_dates):
+                self.logger.error(
+                    "Passed pv_power_forecast_p10 is not long enough for the forecast horizon"
+                )
+                return None
+            p10_list = p10_list[: len(forecast_dates)]
+            try:
+                p50_values = np.asarray(data_list, dtype=float)
+                p10_values = np.asarray(p10_list, dtype=float)
+            except (TypeError, ValueError):
+                self.logger.error(
+                    "Passed pv_power_forecast/pv_power_forecast_p10 contain non-numeric values"
+                )
+                return None
+            if not np.isfinite(p50_values).all() or not np.isfinite(p10_values).all():
+                self.logger.error(
+                    "Passed pv_power_forecast/pv_power_forecast_p10 contain non-finite values"
+                )
+                return None
+            bias = self._parse_pv_quantile_bias()
+            if bias > 0.0:
+                data_list = (bias * p10_values + (1.0 - bias) * p50_values).tolist()
+
         data_dict = {"ts": forecast_dates, "yhat": data_list}
         data = pd.DataFrame.from_dict(data_dict)
         data.set_index("ts", inplace=True)
@@ -964,16 +1004,24 @@ class Forecast:
                 "The scrapper method has been deprecated and the keyword is accepted just for backward compatibility, please change the PV forecast method to open-meteo"
             )
         self.weather_forecast_method = method
-        # The P50/P10 quantile-bias blend is only available from Solcast, the
-        # only provider that returns pv_estimate10. If the knob is set for any
-        # other method, warn and ignore it so the Solcast dependency is explicit
-        # rather than a silent no-op. (Short-circuits before parsing for solcast,
-        # so this never double-logs with the parse inside _get_weather_solcast.)
-        if method != "solcast" and self._parse_pv_quantile_bias() > 0.0:
+        # The quantile-bias blend is supported by native Solcast and by the
+        # caller-supplied list path when a P10 companion is present (#1128).
+        # Other methods, including a P50-only list, retain a visible warning
+        # rather than silently accepting a bias that cannot be applied.
+        list_has_external_p10 = (
+            method == "list"
+            and self.params.get("passed_data", {}).get("pv_power_forecast_p10") is not None
+        )
+        if (
+            method != "solcast"
+            and not list_has_external_p10
+            and self._parse_pv_quantile_bias() > 0.0
+        ):
             self.logger.warning(
                 "weather_forecast_pv_quantile_bias is set but only applies to the "
-                "'solcast' weather_forecast_method (the only provider returning P10 "
-                "quantiles); ignoring it for weather_forecast_method=%r.",
+                "'solcast' weather_forecast_method or to 'list' when "
+                "pv_power_forecast_p10 is supplied; ignoring it for "
+                "weather_forecast_method=%r.",
                 method,
             )
         if method in ["open-meteo", "scrapper"]:
@@ -1163,8 +1211,14 @@ class Forecast:
         beta: float,
         col: str,
         ignore_pv_feedback: bool = False,
+        logger: logging.Logger | None = None,
+        configured_col: str | None = None,
     ) -> pd.DataFrame:
         """A simple correction method for forecasted data using the current real values of a variable.
+
+        If either blend operand (the first forecast value or the latest live
+        value) is NaN, the correction is skipped and the forecast is returned
+        unchanged (issue #1084).
 
         :param df_now: The DataFrame containing the current/real values
         :type df_now: pd.DataFrame
@@ -1178,7 +1232,19 @@ class Forecast:
         :type col: str
         :param ignore_pv_feedback: If True, bypass mixing and return original forecast (used during curtailment)
         :type ignore_pv_feedback: bool
-        :return: The output DataFrame with the corrected values
+        :param logger: Optional logger used to warn when a blend operand is NaN. \
+            If either the first forecast value or the latest live/current value \
+            for ``col`` is NaN, the blend is skipped and ``df_forecast`` is \
+            returned unchanged; a warning naming the NaN operand(s) and ``col`` \
+            is only emitted when a logger is supplied, defaults to None
+        :type logger: logging.Logger, optional
+        :param configured_col: The user-configured sensor name behind ``col`` \
+            when the two differ (the load column is renamed internally to \
+            ``var_load + "_positive"``). Only used to label the NaN warning \
+            with the name the user would recognize, defaults to None
+        :type configured_col: str, optional
+        :return: The output DataFrame with the corrected values, or unchanged \
+            when the correction was skipped
         :rtype: pd.DataFrame
         """
         # If ignoring PV feedback (e.g., during curtailment), return original forecast
@@ -1193,7 +1259,45 @@ class Forecast:
         if df_now is None or col not in df_now.columns or df_now.empty:
             return df_forecast
 
-        first_fcst = alpha * df_forecast.iloc[0] + beta * df_now[col].iloc[-1]
+        forecast_operand = df_forecast.iloc[0]
+        live_operand = df_now[col].iloc[-1]
+        forecast_is_nan = pd.isna(forecast_operand)
+        live_is_nan = pd.isna(live_operand)
+        # Issue #1084: either blend operand can be NaN (e.g. a forecast provider
+        # gap, or no fresh live sensor reading yet). Blending a NaN eventually
+        # hits `int(round(nan))`, which raises `ValueError: cannot convert float
+        # NaN to integer` and crashes the whole optimization call. Skip the
+        # blend and return the forecast unchanged instead. Note: a NaN live
+        # operand (the case diagnosed in #1084) is fully recovered from; a NaN
+        # in the forecast series itself is still fatal further down the
+        # pipeline (nothing repairs it), but this warning names the cause at
+        # its source.
+        if forecast_is_nan or live_is_nan:
+            if logger:
+                nan_operands = []
+                if forecast_is_nan:
+                    nan_operands.append("the first forecast value")
+                if live_is_nan:
+                    nan_operands.append("the latest live sensor value")
+                # The load column is renamed internally to var_load + "_positive";
+                # the caller passes the configured name alongside so users can
+                # find the sensor. Columns passed under their configured name
+                # (e.g. PV) are shown as-is, even if the name ends in "_positive".
+                col_label = (
+                    f"{col} (configured as '{configured_col}')"
+                    if configured_col and configured_col != col
+                    else col
+                )
+                verb = "are" if len(nan_operands) == 2 else "is"
+                logger.warning(
+                    f"get_mix_forecast: {' and '.join(nan_operands)} for column "
+                    f"'{col_label}' {verb} NaN; skipping the mix-forecast blend and "
+                    "returning the forecast unchanged. Check the input data for "
+                    "gaps or unrepaired values."
+                )
+            return df_forecast
+
+        first_fcst = alpha * forecast_operand + beta * live_operand
         df_forecast.iloc[0] = int(round(first_fcst))
         return df_forecast
 
@@ -1363,6 +1467,7 @@ class Forecast:
                 self.params["passed_data"]["beta"],
                 self.var_pv,
                 ignore_pv_feedback,
+                logger=self.logger,
             )
         p_pv_forecast[p_pv_forecast < 0] = 0  # replace any negative PV values with zero
         self.logger.debug("get_power_from_weather returning:\n%s", p_pv_forecast)
@@ -2291,6 +2396,8 @@ class Forecast:
                 self.params["passed_data"]["beta"],
                 self.var_load_new,
                 False,  # Never ignore feedback for load forecasts
+                logger=self.logger,
+                configured_col=self.var_load,
             )
         self.logger.debug("get_load_forecast returning:\n%s", p_load_forecast)
         return p_load_forecast
