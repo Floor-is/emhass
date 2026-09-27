@@ -1,7 +1,7 @@
-# PLANWAARDE-fork: image voor de eigen Home Assistant-add-on.
-# Zelfde route als upstream publish_docker.yaml (buildx per architectuur, push by digest,
-# manifest samenvoegen), met twee harde poorten ervoor: de testsuite op de broncode en
-# de planwaarde-tests IN het gebouwde image. Faalt een van beide, dan wordt er niets gepusht.
+# planwaarde fork: image for the fork's Home Assistant add-on.
+# Same route as upstream publish_docker.yaml (buildx per architecture, push by digest,
+# merge the manifest), with two hard gates in front: the test suite on the source and
+# the planwaarde tests INSIDE the built image. If either fails, nothing is pushed.
 name: "PLANWAARDE image"
 
 on:
@@ -23,9 +23,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install EMHASS with test dependencies
         run: uv sync --extra test
-      - name: Planwaarde-tests
+      - name: Planwaarde tests
         run: uv run pytest -q tests/test_planwaarde.py
-      - name: Upstream-tests die de optimalisatie raken
+      - name: Upstream tests covering the optimisation
         run: >
           uv run pytest -q tests/test_optimization.py tests/test_multi_battery_optimization.py
           tests/test_soc_recovery_prototype.py tests/test_deferrable_runtime_renormalise.py
@@ -56,7 +56,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build image (lokaal)
+      - name: Build image (local)
         id: cache
         uses: docker/build-push-action@v7
         with:
@@ -66,7 +66,7 @@ jobs:
             TARGETARCH=${{ matrix.platform.target_arch }}
             os_version=${{ matrix.platform.os_version }}
           load: true
-      - name: Planwaarde-tests in het image
+      - name: Planwaarde tests inside the image
         run: >
           docker run --rm --platform ${{ matrix.platform.buildx }}
           -v "$PWD/tests/test_planwaarde.py:/app/tests/test_planwaarde.py:ro"

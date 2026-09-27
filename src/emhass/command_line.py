@@ -313,7 +313,7 @@ class OptimizationCache:
             "def_current_operating_timesteps",
             "minimum_power_of_deferrable_loads",
             "cost_forecast_per_deferrable_load",
-            # PLANWAARDE: via cp.Parameter, geen rebuild bij een cache-hit.
+            # PLANWAARDE: via cp.Parameter, no rebuild on a cache hit.
             "battery_terminal_value",
             "deferrable_load_value",
             "deferrable_load_energy_max",

@@ -42,8 +42,7 @@ Three runtime parameters, also usable as config keys. All three are off by defau
 In addition, active only when one of the two load parameters is set:
 
 - **No infeasible problem when the requirement cannot be met.** If the floor does not fit in the window,
-  EMHASS charges what it can and reports the shortfall in column `deferrable<k>_tekort_wh` (*tekort* is
-  Dutch for shortfall), with a warning in the log.
+  EMHASS charges what it can and reports the shortfall in column `deferrable<k>_shortfall_wh`, with a warning in the log.
 - **Cache-friendly.** The three parameters are `cp.Parameter`s and are listed among the runtime keys of
   `OptimizationCache`. A new value therefore gives a cache hit, and the next solve uses the new value.
 
@@ -83,14 +82,16 @@ of charge if the energy in it is worth less than €0.18 per kWh.
   along the same route as the official image. Nothing is pushed unless the tests pass on the source *and*
   inside the built image.
 - **Upstream watch:** a daily workflow rebases the patch onto the latest upstream release and runs the tests.
-  A conflict or a failing test turns the run red; green produces a branch `planwaarde-op-<tag>`. A new release
+  A conflict or a failing test turns the run red; green produces a branch `planwaarde-on-<tag>`. A new release
   never reaches the image by itself: that takes a new tag.
 
 ## Branches and tags
 
 - `planwaarde` (default branch): the patch on the latest upstream release, currently v0.18.4.
-- `v0.18.4-planwaarde.1`: current release. ⛔ `v0.18.3-planwaarde.1` is an intermediate step with an old
-  parameter name (`battery_final_value`); do not use it.
+- `v0.18.4-planwaarde.2`: current release (code, logs and tests in English; shortfall column
+  `deferrable<k>_shortfall_wh`).
+- ⛔ Older tags, do not use: `v0.18.4-planwaarde.1` (Dutch column name `deferrable<k>_tekort_wh`) and
+  `v0.18.3-planwaarde.1` (old parameter name `battery_final_value`).
 - The other branches are copies of upstream branches that came along with the fork.
 
 ## Home Assistant add-on
