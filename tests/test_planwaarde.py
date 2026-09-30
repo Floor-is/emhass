@@ -305,6 +305,14 @@ class TestBounds(unittest.TestCase):
         _, res = self.kwh(0.60, 10.0, 40.0, 0.54)
         self.assertEqual(float(res["deferrable0_shortfall_wh"].iloc[0]), 0.0)
 
+    def test_parameters_without_requirement_give_zero_shortfall_column(self):
+        # new parameters set, no requirement (e.g. no car at the charger): the column (and thus the
+        # sensor) exists and reads 0, so "no shortfall" is distinguishable from "no sensor"
+        e, res = self.kwh(0.60, 0.0, 0.0, 0.539)
+        self.assertIn("deferrable0_shortfall_wh", res.columns)
+        self.assertEqual(float(res["deferrable0_shortfall_wh"].iloc[0]), 0.0)
+        self.assertLess(e, 0.1)
+
     def test_without_parameters_no_shortfall_column(self):
         df, pv, load = inputs(0.30, 0.05)
         res = solve(build(None, def_load={"p": 11000, "hours": 1.0}), df, pv, load, 0.5)
