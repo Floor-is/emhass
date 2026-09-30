@@ -4949,11 +4949,9 @@ class Optimization:
             p_def_k = get_val(self.vars["p_deferrable"][k])
             opt_tp[f"P_deferrable{k}"] = p_def_k
             p_def_sum += p_def_k
-            # PLANWAARDE: shortfall on the requirement, only if the load uses the new parameters.
-            if (
-                k < len(self.param_def_shortfall_max)
-                and (self.param_def_shortfall_max[k].value or 0) > 0
-            ):
+            # PLANWAARDE: shortfall on the requirement whenever the load uses the new parameters,
+            # also with no requirement (then 0), so the sensor always exists for such a load.
+            if getattr(self, "_def_uses_new_params", {}).get(k, False):
                 _tk = float(self.vars["def_shortfall"][k].value or 0.0)
                 _tk = 0.0 if _tk < 1.0 else _tk
                 opt_tp[f"deferrable{k}_shortfall_wh"] = _tk
@@ -5740,6 +5738,9 @@ class Optimization:
                 self.param_def_shortfall_max[k].value = (
                     self.param_target_energy[k].value if _uses_new_params else 0.0
                 )
+                if not hasattr(self, "_def_uses_new_params"):
+                    self._def_uses_new_params = {}
+                self._def_uses_new_params[k] = bool(_uses_new_params)
                 _val = (self.optim_conf.get("deferrable_load_value") or [])
                 self.param_def_value[k].value = float(_val[k]) if k < len(_val) and _val[k] else 0.0
 
