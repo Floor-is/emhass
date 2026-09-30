@@ -2108,11 +2108,51 @@ class Forecast:
         forecast_out["load"] = forecast_out["load"] * scaling_factor / 9000
         return forecast_out.rename(columns={"load": "yhat"})
 
-    def _get_load_forecast_naive(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Helper for naive forecast."""
-        forecast_horizon = len(self.forecast_dates)
-        historical_values = df.iloc[-forecast_horizon:]
-        return pd.DataFrame(historical_values.values, index=self.forecast_dates, columns=["yhat"])
+    def _get_load_forecast_naive(self, df: pd.DataFrame, now=None) -> pd.DataFrame:
+        """Helper for naive forecast: the load at the same time one day earlier.
+
+        PLANWAARDE: aligned on TIME, not on position. Upstream took the last
+        len(forecast_dates) rows of the history and relabelled them with the forecast
+        dates. When the current, incomplete time step was already in the history (or
+        the first forecast date was rounded to the nearest step), the whole series
+        ended up one step early. Here yhat[L] = history[L - 24 h], using only complete
+        history steps (label + freq <= now); if L - 24 h is not complete yet (horizons
+        longer than a day), one more day is subtracted.
+        """
+        target = pd.DatetimeIndex(pd.to_datetime(self.forecast_dates))
+        hist = df.copy()
+        hist.index = pd.DatetimeIndex(pd.to_datetime(hist.index))
+        if hist.index.tz is None and target.tz is not None:
+            hist.index = hist.index.tz_localize(target.tz)
+        elif hist.index.tz is not None and target.tz is not None:
+            hist.index = hist.index.tz_convert(target.tz)
+        hist = hist[~hist.index.duplicated(keep="last")].sort_index()
+        if now is None:
+            now = pd.Timestamp.now(tz=target.tz)
+        step = pd.Timedelta(self.freq)
+        complete = hist[hist.index + step <= now]
+        if complete.empty:
+            self.logger.warning("Naive load forecast: no complete history, using positional values")
+            historical_values = df.iloc[-len(self.forecast_dates):]
+            return pd.DataFrame(
+                historical_values.values, index=self.forecast_dates, columns=["yhat"]
+            )
+        last = complete.index[-1]
+        day = pd.Timedelta(days=1)
+        source = []
+        for label in target:
+            src = label - day
+            while src > last:
+                src = src - day
+            source.append(src)
+        values = complete.reindex(pd.DatetimeIndex(source))
+        missing = int(values.isna().any(axis=1).sum())
+        if missing:
+            self.logger.warning(
+                f"Naive load forecast: {missing} of {len(values)} source steps missing, filled"
+            )
+            values = values.ffill().bfill()
+        return pd.DataFrame(values.values, index=self.forecast_dates, columns=["yhat"])
 
     async def _build_weather_future(
         self, data_last_window: pd.DataFrame, mlf
