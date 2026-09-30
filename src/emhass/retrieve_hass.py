@@ -2007,6 +2007,16 @@ class RetrieveHass:
                 "state": str(state),
                 "attributes": attributes,
             }
+        elif type_var == "shortfall":
+            # PLANWAARDE: one number per plan (shortfall on a deferrable requirement), no horizon.
+            data = {
+                "state": str(state),
+                "attributes": {
+                    "unit_of_measurement": unit_of_measurement,
+                    "device_class": device_class,
+                    "friendly_name": friendly_name,
+                },
+            }
         elif type_var == "energy":
             data = RetrieveHass.get_attr_data_dict(
                 data_df,

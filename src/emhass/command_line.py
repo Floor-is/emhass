@@ -3713,6 +3713,23 @@ async def _publish_deferrable_loads(ctx: PublishContext, opt_res_latest: pd.Data
             **ctx.common_kwargs,
         )
         cols.append(col_name)
+        # PLANWAARDE: shortfall on the requirement as its own sensor. The column only
+        # exists when the load uses the new parameters, so upstream behaviour is unchanged.
+        col_sf = f"deferrable{k}_shortfall_wh"
+        if col_sf in opt_res_latest.columns:
+            ids_sf = ctx.params["passed_data"].get("custom_deferrable_shortfall_id") or []
+            ent = ids_sf[k] if k < len(ids_sf) else {}
+            await ctx.rh.post_data(
+                opt_res_latest[col_sf],
+                ctx.idx,
+                ent.get("entity_id", f"sensor.p_deferrable{k}_shortfall"),
+                "energy",
+                ent.get("unit_of_measurement", "Wh"),
+                ent.get("friendly_name", f"Deferrable Load {k} shortfall"),
+                type_var="shortfall",
+                **ctx.common_kwargs,
+            )
+            cols.append(col_sf)
     return cols
 
 

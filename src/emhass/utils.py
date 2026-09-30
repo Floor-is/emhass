@@ -2467,6 +2467,11 @@ async def treat_runtimeparams(
             params["passed_data"]["custom_unit_prod_price_id"] = runtimeparams[
                 "custom_unit_prod_price_id"
             ]
+        # PLANWAARDE: entity ids for the shortfall sensors (list, one per deferrable load).
+        if "custom_deferrable_shortfall_id" in runtimeparams.keys():
+            params["passed_data"]["custom_deferrable_shortfall_id"] = runtimeparams[
+                "custom_deferrable_shortfall_id"
+            ]
         if "custom_deferrable_forecast_id" in runtimeparams.keys():
             params["passed_data"]["custom_deferrable_forecast_id"] = runtimeparams[
                 "custom_deferrable_forecast_id"
