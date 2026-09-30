@@ -46,6 +46,20 @@ In addition, active only when one of the two load parameters is set:
 - **Cache-friendly.** The three parameters are `cp.Parameter`s and are listed among the runtime keys of
   `OptimizationCache`. A new value therefore gives a cache hit, and the next solve uses the new value.
 
+Two more changes, both active without any new parameter:
+
+- **Naive load forecast aligned on time.** Upstream relabels the last N history rows by position. When the
+  current, incomplete time step is already in the history, the whole load series ends up one step early. The
+  fork uses `yhat[L] = history[L − 24 h]` over complete steps only (`tests/test_planwaarde_naive.py` varies the
+  run moment; upstream fails 4 of 5 cases).
+- **Shortfall as a sensor.** When a load uses the new parameters, `publish-data` also posts its shortfall
+  (`sensor.p_deferrable<k>_shortfall`, or your own name via `custom_deferrable_shortfall_id`).
+
+⚠️ Recommended config: `method_ts_round: "first"`. With `"nearest"` (the upstream default) the plan index starts
+at the nearest step, while runtime lists and dicts (prices, PV, load) are aligned on the floor. In the second
+half of a time step every runtime input then sits one step late under the plan labels. This is upstream
+behaviour; the fork does not change it, the config setting avoids it.
+
 Limitation: with `deferrable_load_max_cost` > 0 the requirement stays an equality; the fork then logs that
 `deferrable_load_energy_max` is ignored.
 
@@ -95,8 +109,8 @@ discharge efficiency × a typical import price, minus the wear cost.
 ## Branches and tags
 
 - `planwaarde` (default branch): the patch on the latest upstream release, currently v0.18.4.
-- `v0.18.4-planwaarde.2`: current release (code, logs and tests in English; shortfall column
-  `deferrable<k>_shortfall_wh`).
+- `v0.18.4-planwaarde.3`: current release (naive load forecast on time, shortfall sensor).
+- `v0.18.4-planwaarde.2`: English throughout; shortfall column `deferrable<k>_shortfall_wh`.
 - ⛔ Older tags, do not use: `v0.18.4-planwaarde.1` (Dutch column name `deferrable<k>_tekort_wh`) and
   `v0.18.3-planwaarde.1` (old parameter name `battery_final_value`).
 - The other branches are copies of upstream branches that came along with the fork.
