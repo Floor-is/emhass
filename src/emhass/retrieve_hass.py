@@ -436,6 +436,10 @@ class RetrieveHass:
         url = f"{base_url}?filter_entity_id={var}"
         if minimal_response:
             url += "&minimal_response"  # Note: fixed to & if query params exist, but ? is fine if it's the only one. Actually, filter_entity_id uses ?, so we MUST use & here.
+            # planwaarde: _process_history_dataframe reads only `state` and `last_changed`,
+            # so the attributes are dead weight. On a sensor with ~50k states/day they made
+            # one day 13-15 MB and 38-58 s instead of ~3 MB and 10-15 s.
+            url += "&no_attributes"
         if significant_changes_only:
             url += "&significant_changes_only"
         return url

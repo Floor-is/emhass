@@ -24,7 +24,7 @@ jobs:
       - name: Install EMHASS with test dependencies
         run: uv sync --extra test
       - name: Planwaarde tests
-        run: uv run pytest -q tests/test_planwaarde.py tests/test_planwaarde_naive.py
+        run: uv run pytest -q tests/test_planwaarde.py tests/test_planwaarde_naive.py tests/test_planwaarde_minimal_history.py
       - name: Upstream tests covering the optimisation
         run: >
           uv run pytest -q tests/test_optimization.py tests/test_multi_battery_optimization.py
@@ -71,6 +71,7 @@ jobs:
           docker run --rm --platform ${{ matrix.platform.buildx }}
           -v "$PWD/tests/test_planwaarde.py:/app/tests/test_planwaarde.py:ro"
           -v "$PWD/tests/test_planwaarde_naive.py:/app/tests/test_planwaarde_naive.py:ro"
+          -v "$PWD/tests/test_planwaarde_minimal_history.py:/app/tests/test_planwaarde_minimal_history.py:ro"
           --entrypoint python ${{ steps.cache.outputs.imageid }}
           -m unittest discover -v -s /app/tests -p "test_planwaarde*.py"
       - name: Extract metadata
