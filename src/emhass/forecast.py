@@ -2144,7 +2144,9 @@ class Forecast:
                 self.var_load_new = self.var_load + "_positive"
         else:
             days_list = get_days_list(days_min_load_forecast)
-            if not await rh.get_data(days_list, var_list):
+            # planwaarde: minimal history (no attributes) for the load forecast. Without it a
+            # busy load sensor pushed dayahead-optim past the caller's HTTP timeout.
+            if not await rh.get_data(days_list, var_list, minimal_response=True):
                 return False
         if not rh.prepare_data(
             self.retrieve_hass_conf["sensor_power_load_no_var_loads"],
