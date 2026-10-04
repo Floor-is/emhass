@@ -51,7 +51,7 @@ jobs:
         if: steps.tag.outputs.run == 'yes'
         run: |
           uv sync --extra test
-          uv run pytest -q tests/test_planwaarde.py tests/test_planwaarde_naive.py tests/test_optimization.py tests/test_multi_battery_optimization.py tests/test_runtime_params.py tests/test_schema_contract.py
+          uv run pytest -q tests/test_planwaarde.py tests/test_planwaarde_naive.py tests/test_planwaarde_minimal_history.py tests/test_optimization.py tests/test_multi_battery_optimization.py tests/test_runtime_params.py tests/test_schema_contract.py
       - name: Keep the rebased branch
         if: steps.tag.outputs.run == 'yes'
         run: git push origin "planwaarde-on-${{ steps.tag.outputs.latest }}"
