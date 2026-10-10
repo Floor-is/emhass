@@ -154,6 +154,14 @@ class TestTerminalValue(unittest.TestCase):
     def test_list_per_battery(self):
         self.assertLess(self.end_soc({"battery_terminal_value": [0.26]}), SOC_MIN + 0.01)
 
+    def test_may_end_above_soc_init(self):
+        # Import 0.10 against v = 0.50: each AC kWh charged is worth 0.50 * ETA_CHG = 0.47.
+        # No fixed end state also means no penalty ABOVE soc_init; since v0.18.5 that side
+        # has its own parameter (param_soc_final_reward), which must be off as well.
+        df, pv, load = inputs(0.10, 0.05)
+        res = solve(build({"battery_terminal_value": 0.5}), df, pv, load, soc_init=0.2)
+        self.assertGreater(float(res["SOC_opt"].iloc[-1]), 0.99)
+
 
 class TestLoadValue(unittest.TestCase):
     """deferrable_load_value + deferrable_load_energy_max. Load 11 kW, floor 10 kWh,
