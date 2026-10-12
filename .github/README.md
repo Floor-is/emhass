@@ -46,12 +46,13 @@ In addition, active only when one of the two load parameters is set:
 - **Cache-friendly.** The three parameters are `cp.Parameter`s and are listed among the runtime keys of
   `OptimizationCache`. A new value therefore gives a cache hit, and the next solve uses the new value.
 
-Two more changes, both active without any new parameter:
+One more change, active without any new parameter:
 
-- **Naive load forecast aligned on time.** Upstream relabels the last N history rows by position. When the
-  current, incomplete time step is already in the history, the whole load series ends up one step early. The
-  fork uses `yhat[L] = history[L − 24 h]` over complete steps only (`tests/test_planwaarde_naive.py` varies the
-  run moment; upstream fails 4 of 5 cases).
+- **Naive load forecast: upstream since v0.18.5-planwaarde.1.** Up to v0.18.4-planwaarde.5 the fork had its own
+  naive rule (`history[L − 24 h]`), because upstream relabelled the last N history rows by position and ended one
+  step early. Upstream v0.18.5 (#1171) aligns on the local time of day, on calendar days, so the fork's rule was
+  dropped: across a DST change it looked back one hour shifted. `tests/test_planwaarde_naive.py` varies the run
+  moment and covers the fall-back of 25-10-2026.
 - **Shortfall as a sensor.** When a load uses the new parameters, `publish-data` also posts its shortfall
   (0 when there is no requirement)
   (`sensor.p_deferrable<k>_shortfall`, or your own name via `custom_deferrable_shortfall_id`).
@@ -109,8 +110,11 @@ discharge efficiency × a typical import price, minus the wear cost.
 
 ## Branches and tags
 
-- `planwaarde` (default branch): the patch on the latest upstream release, currently v0.18.4.
-- `v0.18.4-planwaarde.4`: current release (shortfall sensor always present for loads with the new parameters).
+- `planwaarde` (default branch): the patch on v0.18.4.
+- `planwaarde-on-v0.18.5`: the patch on v0.18.5, without the fork's own naive load forecast.
+- `v0.18.5-planwaarde.1`: the patch on v0.18.5; naive load forecast from upstream.
+- `v0.18.4-planwaarde.5`: minimal history for the load forecast.
+- `v0.18.4-planwaarde.4`: shortfall sensor always present for loads with the new parameters.
 - `v0.18.4-planwaarde.3`: naive load forecast on time, shortfall sensor.
 - `v0.18.4-planwaarde.2`: English throughout; shortfall column `deferrable<k>_shortfall_wh`.
 - ⛔ Older tags, do not use: `v0.18.4-planwaarde.1` (Dutch column name `deferrable<k>_tekort_wh`) and
