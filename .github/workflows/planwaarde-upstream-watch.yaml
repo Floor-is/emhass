@@ -8,6 +8,13 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+    inputs:
+      patch:
+        description: "planwaarde release tag to rebase (empty = newest v*-planwaarde.* tag)"
+        required: false
+      upstream:
+        description: "upstream tag to rebase onto (empty = latest upstream release)"
+        required: false
 
 jobs:
   watch:
@@ -23,14 +30,21 @@ jobs:
         id: tag
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_PATCH: ${{ inputs.patch }}
+          INPUT_UPSTREAM: ${{ inputs.upstream }}
         run: |
           git remote add upstream https://github.com/davidusb-geek/emhass.git
           git fetch --quiet upstream --tags
-          latest=$(gh api repos/davidusb-geek/emhass/releases/latest --jq .tag_name)
-          base=$(git describe --tags --abbrev=0 --exclude '*-planwaarde*' HEAD)
-          echo "upstream release: $latest · base of planwaarde: $base"
-          test -n "$latest" && test -n "$base"
+          latest=${INPUT_UPSTREAM:-$(gh api repos/davidusb-geek/emhass/releases/latest --jq .tag_name)}
+          # The patch is the newest release tag (what the add-on runs), not the planwaarde branch:
+          # that branch stayed on v0.18.4 while the release moved to v0.18.5.
+          patch=${INPUT_PATCH:-$(git tag -l 'v*-planwaarde.*' --sort=-v:refname | head -1)}
+          base=${patch%-planwaarde.*}
+          echo "upstream release: $latest · patch: $patch · base of patch: $base"
+          test -n "$latest" && test -n "$patch"
+          git merge-base --is-ancestor "$base" "$patch"
           echo "latest=$latest" >>"$GITHUB_OUTPUT"
+          echo "patch=$patch" >>"$GITHUB_OUTPUT"
           echo "base=$base" >>"$GITHUB_OUTPUT"
           if [ "$latest" = "$base" ] || git ls-remote --exit-code --heads origin "planwaarde-on-$latest" >/dev/null; then
             echo "nothing to do"; echo "run=no" >>"$GITHUB_OUTPUT"
@@ -42,7 +56,7 @@ jobs:
         run: |
           git config user.name "planwaarde-watch"
           git config user.email "planwaarde-watch@users.noreply.github.com"
-          git checkout -b "planwaarde-on-${{ steps.tag.outputs.latest }}"
+          git checkout -b "planwaarde-on-${{ steps.tag.outputs.latest }}" "${{ steps.tag.outputs.patch }}"
           git rebase --onto "${{ steps.tag.outputs.latest }}" "${{ steps.tag.outputs.base }}"
       - name: Install uv
         if: steps.tag.outputs.run == 'yes'
